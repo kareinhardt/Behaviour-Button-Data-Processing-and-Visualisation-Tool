@@ -139,6 +139,8 @@ Ensure the following folder structure is in place:
 
 ---
 
+
 ## **License and Author Info**
 - **Author**: NICA Design Team (with GPT-4 assistance)
-- **License**: Restricted to NICA's internal use for the Behaviour Button Public Pilot study.
+- **License**: This tool is designed for **NICA internal use** for the Behaviour Button Public Pilot study but is released under the **MIT License**. NICA does not guarantee the results it produces and is not responsible for any errors or inaccuracies generated when the tool is used outside NICA.
+
