@@ -7,7 +7,7 @@ The tool simplifies data processing, analysis, and visualisation, primarily to s
 
 # fpMaker Scripts
 
-For detailed information about the two scripts, check the README file on GitHub:
+For detailed information about Fingerprints Maker (fpMaker), check the README file:
 
 [fpMakerReadme.md](https://github.com/kareinhardt/Behaviour-Button-Data-Processing-and-Visualisation-Tool/blob/main/fpMakerReadme.md)
 
