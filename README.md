@@ -5,6 +5,12 @@ This project, developed by the NICA Design Team with the assistance of GPT-4, is
 
 The tool simplifies data processing, analysis, and visualisation, primarily to support the **Design** and **Insight** teams in generating reports for **Voice® Member feedback** and preparing project documentation. It automates repetitive tasks, provides insights into behavioural patterns, and creates detailed visualisations that facilitate impactful reporting.
 
+# fpMaker Scripts
+
+For detailed information about the two scripts, check the README file on GitHub:
+
+[fpMakerReadme.md](https://github.com/kareinhardt/Behaviour-Button-Data-Processing-and-Visualisation-Tool/blob/main/fpMakerReadme.md)
+
 ---
 
 ## **Installation Instructions**
