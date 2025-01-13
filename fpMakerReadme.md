@@ -1,6 +1,3 @@
-Here's an updated and combined documentation for both `fpMaker(individuals_combine_activity.py)` and `fpMaker(individuals_each_behaviours.py)`:
-
----
 
 # **Documentation for `fpMaker` Scripts**
 
