@@ -3,12 +3,35 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
+try:
+    from skimage.color import rgb2lab, lab2rgb
+except ImportError:
+    rgb2lab = lab2rgb = None
 from datetime import datetime
 from matplotlib.patches import FancyBboxPatch
 from matplotlib.colors import rgb_to_hsv, hsv_to_rgb
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.colors import ListedColormap, BoundaryNorm
 from matplotlib.colors import to_rgb
+
+
+# --- Helper for perceptual Lab gradient with fallback ---
+def get_lab_gradient(start_hex, end_hex, levels):
+    """Return a list of `levels` RGB tuples interpolated perceptually in Lab (fallback to RGB if skimage missing)."""
+    import numpy as _np
+    from matplotlib.colors import to_rgb
+    s = to_rgb(start_hex)
+    e = to_rgb(end_hex)
+    if rgb2lab is not None:
+        # Lab interpolation
+        s_lab = rgb2lab(_np.array([[s]]))[0,0]
+        e_lab = rgb2lab(_np.array([[e]]))[0,0]
+        labs = _np.linspace(s_lab, e_lab, levels)
+        rgbs = lab2rgb(labs[_np.newaxis, :, :])[0]
+    else:
+        # Fallback: simple RGB linear interpolation
+        rgbs = [tuple((1 - t) * _np.array(s) + t * _np.array(e)) for t in _np.linspace(0, 1, levels)]
+    return [tuple(rgb) for rgb in rgbs]
 
 
 pd.options.mode.chained_assignment = None  # Suppress SettingWithCopyWarning
@@ -710,7 +733,6 @@ def generate_weekly_behavior_heatmaps(df, export_path, start_date, end_date):
     3→#8100D9, >=4→#9700FF. Transparent background.
     """
     import numpy as _np
-    from matplotlib.colors import ListedColormap, BoundaryNorm
     # Prepare data
     df2 = df.copy()
     df2['Timestamp'] = pd.to_datetime(df2['Timestamp'])
@@ -719,10 +741,12 @@ def generate_weekly_behavior_heatmaps(df, export_path, start_date, end_date):
     df2['Year'] = df2['Timestamp'].dt.isocalendar().year
     df2['Week'] = df2['Timestamp'].dt.isocalendar().week
 
-    # Colour gradient
-    colors = ['#3C0066', '#53008C', '#6A00B2', '#8100D9', '#9700FF']
-    cmap = ListedColormap(colors)
-    norm = BoundaryNorm([0,1,2,3,4,5], len(colors))
+    # Continuous perceptual gradient between pale yellow and magenta
+    from matplotlib.colors import LinearSegmentedColormap
+    start_hex, end_hex = "#FFEB8B", "#FF00CA"
+    cmap = LinearSegmentedColormap.from_list(
+        "week_grad", [start_hex, end_hex], N=256
+    )
 
     behaviours = df2['Behaviour Name'].dropna().unique()
     for beh in behaviours:
@@ -749,28 +773,170 @@ def generate_weekly_behavior_heatmaps(df, export_path, start_date, end_date):
             fig_h = (cell_size*2 + spacing)/72
             fig, ax = plt.subplots(figsize=(fig_w, fig_h))
             fig.patch.set_alpha(0); ax.set_alpha(0)
+            max_val = mat.max() if mat.max() > 0 else 1
             for i in range(2):
                 for j in range(24):
                     x=j*(cell_size+spacing)/72; y=(1-i)*(cell_size+spacing)/72
-                    val=mat[i,j]
-                    idx = val if val<4 else 4
+                    val = mat[i,j]
+                    norm_val = val / max_val
                     rect = FancyBboxPatch(
-                        (x,y), cell_size/72, cell_size/72,
+                        (x, y), cell_size/72, cell_size/72,
                         boxstyle=f"round,pad=0,rounding_size={corner/72}",
-                        facecolor=colors[idx], edgecolor='none'
+                        facecolor=cmap(norm_val), edgecolor='none'
                     )
                     ax.add_patch(rect)
             ax.set_xlim(0, fig_w); ax.set_ylim(0, fig_h)
             ax.set_xticks([]); ax.set_yticks([])
             ax.invert_yaxis()
             for spine in ax.spines.values(): spine.set_visible(False)
-            # Compute min/max for filename
+            # Compute min/max/total for filename
             min_val = int(mat.min())
             max_val = int(mat.max())
-            fname = f"{beh}_{yr}-W{wk}_heatmap(min_{min_val}_max_{max_val})_{start_date}_to_{end_date}.png"
+            total_val = int(mat.sum())
+            fname = f"{beh}_{yr}-W{wk}_heatmap(min_{min_val}_max_{max_val}_total_{total_val})_{start_date}_to_{end_date}.png"
             plt.savefig(os.path.join(export_path, fname), format='png', dpi=300,
                         bbox_inches='tight', pad_inches=0, transparent=True)
             plt.close()
+
+# --- New function: generate_weekly_behavior_heatmaps_custom
+def generate_weekly_behavior_heatmaps_custom(df, export_path, start_date, end_date, start_hex, end_hex):
+    """
+    For each Behaviour Name and for each calendar week in the date range,
+    generate a 2×24 heatmap (row 1 = weekdays, row 2 = weekend) of event counts per hour.
+    Uses a continuous perceptual gradient between the provided start_hex and end_hex colors.
+    Transparent background.
+    """
+    import numpy as _np
+    # Prepare data
+    df2 = df.copy()
+    df2['Timestamp'] = pd.to_datetime(df2['Timestamp'])
+    df2['Date'] = df2['Timestamp'].dt.date
+    df2['Hour'] = df2['Timestamp'].dt.hour
+    df2['Year'] = df2['Timestamp'].dt.isocalendar().year
+    df2['Week'] = df2['Timestamp'].dt.isocalendar().week
+
+    from matplotlib.colors import LinearSegmentedColormap
+    cmap = LinearSegmentedColormap.from_list(
+        "week_grad_custom", [start_hex, end_hex], N=256
+    )
+
+    behaviours = df2['Behaviour Name'].dropna().unique()
+    for beh in behaviours:
+        beh_df = df2[df2['Behaviour Name']==beh]
+        # group by year-week
+        for (yr, wk), group in beh_df.groupby(['Year','Week']):
+            # filter to only days within start/end
+            subset = group[(group['Date']>=start_date)&(group['Date']<=end_date)]
+            if subset.empty:
+                continue
+            # build 2×24 matrix: weekdays (Mon–Fri), weekends (Sat–Sun)
+            mat = _np.zeros((2,24), dtype=int)
+            # weekday mask: weekday <5
+            wd = subset[subset['Timestamp'].dt.weekday<5]
+            we = subset[subset['Timestamp'].dt.weekday>=5]
+            for df_seg, row in ((wd,0),(we,1)):
+                counts = df_seg.groupby('Hour').size()
+                for h,c in counts.items():
+                    mat[row, h] = c
+            # draw heatmap
+            cell_size=20; spacing=8; corner=4
+            weeks = [f"{yr}-W{wk:02d}"]
+            fig_w = (cell_size*24 + spacing*23)/72
+            fig_h = (cell_size*2 + spacing)/72
+            fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+            fig.patch.set_alpha(0); ax.set_alpha(0)
+            max_val = mat.max() if mat.max() > 0 else 1
+            for i in range(2):
+                for j in range(24):
+                    x=j*(cell_size+spacing)/72; y=(1-i)*(cell_size+spacing)/72
+                    val = mat[i,j]
+                    norm_val = val / max_val
+                    rect = FancyBboxPatch(
+                        (x, y), cell_size/72, cell_size/72,
+                        boxstyle=f"round,pad=0,rounding_size={corner/72}",
+                        facecolor=cmap(norm_val), edgecolor='none'
+                    )
+                    ax.add_patch(rect)
+            ax.set_xlim(0, fig_w); ax.set_ylim(0, fig_h)
+            ax.set_xticks([]); ax.set_yticks([])
+            ax.invert_yaxis()
+            for spine in ax.spines.values(): spine.set_visible(False)
+            # Compute min/max/total for filename
+            min_val = int(mat.min())
+            max_val = int(mat.max())
+            total_val = int(mat.sum())
+            fname = f"{beh}_{yr}-W{wk}_heatmap(min_{min_val}_max_{max_val}_total_{total_val})_{start_date}_to_{end_date}_custom.png"
+            plt.savefig(os.path.join(export_path, fname), format='png', dpi=300,
+                        bbox_inches='tight', pad_inches=0, transparent=True)
+            plt.close()
+
+# --- New function: generate_overall_behavior_heatmaps_custom
+def generate_overall_behavior_heatmaps_custom(df, export_path, start_date, end_date, start_hex, end_hex):
+    """
+    For each Behaviour Name, generate a 2×24 heatmap aggregated across the entire date range,
+    using a continuous perceptual gradient between start_hex and end_hex.
+    Transparent background.
+    """
+    import numpy as _np
+    from matplotlib.colors import LinearSegmentedColormap
+    # Prepare data
+    df2 = df.copy()
+    df2['Timestamp'] = pd.to_datetime(df2['Timestamp'])
+    df2['Date'] = df2['Timestamp'].dt.date
+    df2['Hour'] = df2['Timestamp'].dt.hour
+
+    # Create colormap
+    cmap = LinearSegmentedColormap.from_list(
+        "overall_grad_custom", [start_hex, end_hex], N=256
+    )
+
+    behaviours = df2['Behaviour Name'].dropna().unique()
+    for beh in behaviours:
+        subset = df2[(df2['Behaviour Name']==beh)
+                     & (df2['Date']>=start_date)
+                     & (df2['Date']<=end_date)]
+        if subset.empty:
+            continue
+        # build 2×24 matrix
+        mat = _np.zeros((2,24), dtype=int)
+        wd = subset[subset['Timestamp'].dt.weekday < 5]
+        we = subset[subset['Timestamp'].dt.weekday >= 5]
+        for grp, row in ((wd,0),(we,1)):
+            counts = grp.groupby('Hour').size()
+            for h,c in counts.items():
+                mat[row,h] = c
+        # draw heatmap (mirror generate_overall_behavior_heatmaps)
+        cell_size=20; spacing=8; corner=4
+        fig_w = (cell_size*24 + spacing*23)/72
+        fig_h = (cell_size*2 + spacing)/72
+        fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+        fig.patch.set_alpha(0); ax.set_alpha(0)
+        max_val = mat.max() if mat.max() > 0 else 1
+        for i in range(2):
+            for j in range(24):
+                x=j*(cell_size+spacing)/72; y=(1-i)*(cell_size+spacing)/72
+                norm_val = mat[i,j] / max_val
+                rect = FancyBboxPatch(
+                    (x, y), cell_size/72, cell_size/72,
+                    boxstyle=f"round,pad=0,rounding_size={corner/72}",
+                    facecolor=cmap(norm_val), edgecolor='none'
+                )
+                ax.add_patch(rect)
+        ax.set_xlim(0, fig_w); ax.set_ylim(0, fig_h)
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.invert_yaxis()
+        for spine in ax.spines.values(): spine.set_visible(False)
+        # Compute min/max/total for filename
+        min_val = int(mat.min())
+        max_val = int(mat.max())
+        total_val = int(mat.sum())
+        filename = f"{beh}_overall_heatmap(min_{min_val}_max_{max_val}_total_{total_val})_{start_date}_to_{end_date}_custom.png"
+        plt.savefig(
+            os.path.join(export_path, filename),
+            format='png', dpi=300,
+            bbox_inches='tight', pad_inches=0, transparent=True
+        )
+        plt.close()
 
 # --- New function: generate_overall_behavior_heatmaps
 def generate_overall_behavior_heatmaps(df, export_path, start_date, end_date):
@@ -780,18 +946,19 @@ def generate_overall_behavior_heatmaps(df, export_path, start_date, end_date):
     (#3C0066, #53008C, #6A00B2, #8100D9, #9700FF) and transparent background.
     """
     import numpy as _np
-    from matplotlib.colors import ListedColormap, BoundaryNorm
     # Prepare data
     df2 = df.copy()
     df2['Timestamp'] = pd.to_datetime(df2['Timestamp'])
     df2['Date'] = df2['Timestamp'].dt.date
     df2['Hour'] = df2['Timestamp'].dt.hour
-    
-    # Colour gradient
-    colors = ['#3C0066', '#53008C', '#6A00B2', '#8100D9', '#9700FF']
-    cmap = ListedColormap(colors)
-    norm = BoundaryNorm([0,1,2,3,4,5], len(colors))
-    
+
+    # Continuous perceptual gradient between pale yellow and magenta
+    from matplotlib.colors import LinearSegmentedColormap
+    start_hex, end_hex = "#FFEB8B", "#FF00CA"
+    cmap = LinearSegmentedColormap.from_list(
+        "overall_grad", [start_hex, end_hex], N=256
+    )
+
     behaviours = df2['Behaviour Name'].dropna().unique()
     for beh in behaviours:
         subset = df2[(df2['Behaviour Name']==beh) &
@@ -812,25 +979,27 @@ def generate_overall_behavior_heatmaps(df, export_path, start_date, end_date):
         fig_h = (cell_size*2 + spacing)/72
         fig, ax = plt.subplots(figsize=(fig_w, fig_h))
         fig.patch.set_alpha(0); ax.set_alpha(0)
+        max_val = mat.max() if mat.max() > 0 else 1
         for i in range(2):
             for j in range(24):
                 x=j*(cell_size+spacing)/72; y=(1-i)*(cell_size+spacing)/72
-                val=mat[i,j]
-                idx = val if val<4 else 4
+                val = mat[i,j]
+                norm_val = val / max_val
                 rect = FancyBboxPatch(
-                    (x,y), cell_size/72, cell_size/72,
+                    (x, y), cell_size/72, cell_size/72,
                     boxstyle=f"round,pad=0,rounding_size={corner/72}",
-                    facecolor=colors[idx], edgecolor='none'
+                    facecolor=cmap(norm_val), edgecolor='none'
                 )
                 ax.add_patch(rect)
         ax.set_xlim(0, fig_w); ax.set_ylim(0, fig_h)
         ax.set_xticks([]); ax.set_yticks([])
         ax.invert_yaxis()
         for spine in ax.spines.values(): spine.set_visible(False)
-        # Compute min/max for filename
+        # Compute min/max/total for filename
         min_val = int(mat.min())
         max_val = int(mat.max())
-        filename = f"{beh}_overall_heatmap(min_{min_val}_max_{max_val})_{start_date}_to_{end_date}.png"
+        total_val = int(mat.sum())
+        filename = f"{beh}_overall_heatmap(min_{min_val}_max_{max_val}_total_{total_val})_{start_date}_to_{end_date}.png"
         plt.savefig(
             os.path.join(export_path, filename),
             format='png', dpi=300,
@@ -877,6 +1046,7 @@ def main():
                     print("[4] Consolidated Charts by Behavior")
                     print("[5] Behaviour Mix Chart")
                     print("[6] Weekly Behaviour Heatmaps")
+                    print("[7] Weekly Behaviour Heatmaps (custom)")
                     choice = input("Enter the number of your choice: ").strip()
                     export_path = create_data_vis_folder()
                     if choice == '1':
@@ -899,6 +1069,21 @@ def main():
                     elif choice == '6':
                         generate_weekly_behavior_heatmaps(merged_df, export_path, start_date, end_date)
                         generate_overall_behavior_heatmaps(merged_df, export_path, start_date, end_date)
+                    elif choice == '7':
+                        # Prompt user for custom gradient colors
+                        start_hex = input("Enter start hex color (e.g. FFEB8B or #FFEB8B): ").strip()
+                        if not start_hex.startswith('#'):
+                            start_hex = '#' + start_hex
+                        end_hex = input("Enter end hex color (e.g. FF00CA or #FF00CA): ").strip()
+                        if not end_hex.startswith('#'):
+                            end_hex = '#' + end_hex
+                        generate_weekly_behavior_heatmaps_custom(
+                            merged_df, export_path, start_date, end_date, start_hex, end_hex
+                        )
+                        # Also generate overall custom heatmaps
+                        generate_overall_behavior_heatmaps_custom(
+                            merged_df, export_path, start_date, end_date, start_hex, end_hex
+                        )
                     else:
                         print("Invalid choice. No visualization generated.")
                     break  # Exit the main loop after processing user selection
